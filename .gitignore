@@ -1,0 +1,22 @@
+/target
+
+# Schematics
+*.schematic
+*.schem
+*.litematic
+
+# Maps
+*.map
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+
+# misc
+*.log
+.DS_Store
+
+
