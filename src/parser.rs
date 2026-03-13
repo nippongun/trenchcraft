@@ -4,7 +4,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub struct Block {
     pub name: String,
-    // Add properties later if needed
+    pub properties: HashMap<String, String>,
 }
 
 pub struct VoxelMap {
@@ -32,9 +32,18 @@ pub fn parse_nbt(data: &Value) -> Option<VoxelMap> {
         if let Some(Value::Compound(palette)) = map.get("Palette") {
             for (name, val) in palette {
                 if let Value::Int(id) = val {
-                    // Split out block properties if they exist: "minecraft:chest[facing=north]"
                     let block_name = name.split('[').next().unwrap_or(name).to_string();
-                    palette_map.insert(*id, Block { name: block_name });
+                    let props_str = name.split('[').nth(1).unwrap_or("").trim_end_matches(']');
+                    let mut properties = HashMap::new();
+                    for pair in props_str.split(',') {
+                        let mut kv = pair.splitn(2, '=');
+                        if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                            if !k.is_empty() {
+                                properties.insert(k.to_string(), v.to_string());
+                            }
+                        }
+                    }
+                    palette_map.insert(*id, Block { name: block_name, properties });
                 }
             }
         }
@@ -92,7 +101,7 @@ impl VoxelMap {
                     let block_name = mc_block.name.to_string();
                     
                     let idx = (y * (width * length) + z * width + x) as usize;
-                    blocks[idx] = Some(Block { name: block_name });
+                    blocks[idx] = Some(Block { name: block_name, properties: HashMap::new() });
                 }
             }
         }

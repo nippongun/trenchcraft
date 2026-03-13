@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod nbt_unpack;
 mod parser;
 mod filter;
+mod block_shapes;
 mod optimizer;
 mod exporter;
 

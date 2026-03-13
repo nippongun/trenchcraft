@@ -14,8 +14,6 @@ pub fn export_map(brushes: &[Brush], output: &Path) {
         }
     };
 
-    let scale = 32; // Scaling factor: 1 Minecraft block = 32x32x32 Quake units
-
     writeln!(file, "// Game: Generic").unwrap();
     writeln!(file, "// Format: Valve").unwrap();
     writeln!(file, "// entity 0").unwrap();
@@ -25,14 +23,13 @@ pub fn export_map(brushes: &[Brush], output: &Path) {
 
     for brush in brushes {
         let tex = &brush.texture;
-        
-        let x1 = brush.min.0 * scale;
-        let y1 = brush.min.2 * scale; // Map Z to Y
-        let z1 = brush.min.1 * scale; // Map Y to Z (Minecraft Z is depth, Y is up. Quake Y is depth, Z is up)
-        
-        let x2 = (brush.max.0 + 1) * scale;
-        let y2 = (brush.max.2 + 1) * scale;
-        let z2 = (brush.max.1 + 1) * scale;
+
+        let x1 = brush.min.0;
+        let y1 = brush.min.1;
+        let z1 = brush.min.2;
+        let x2 = brush.max.0;
+        let y2 = brush.max.1;
+        let z2 = brush.max.2;
 
         writeln!(file, "// Brush").unwrap();
         writeln!(file, "{{").unwrap();
