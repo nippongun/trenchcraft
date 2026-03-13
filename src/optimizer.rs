@@ -1,5 +1,19 @@
+use clap::ValueEnum;
+
 use crate::block_shapes::{self, BlockShape};
 use crate::parser::{Block, VoxelMap};
+
+#[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Default)]
+pub enum GreedyLevel {
+    /// No merging — one brush per block
+    None,
+    /// Merge full blocks only
+    #[value(name = "full-only")]
+    FullOnly,
+    /// Merge all compatible shapes (default)
+    #[default]
+    All,
+}
 
 pub struct Brush {
     pub min: (i32, i32, i32),
@@ -7,14 +21,23 @@ pub struct Brush {
     pub texture: String,
 }
 
+#[derive(Copy, Clone)]
+enum Axis { X, Y, Z }
+
+const AXES_XZY: &[Axis] = &[Axis::X, Axis::Z, Axis::Y]; // full blocks
+const AXES_XZ:  &[Axis] = &[Axis::X, Axis::Z];           // slabs
+const AXES_ZY:  &[Axis] = &[Axis::Z, Axis::Y];           // NS panels
+const AXES_XY:  &[Axis] = &[Axis::X, Axis::Y];           // EW panels
+
 // Map Minecraft block coords to Quake units: X→X, Z→Y, Y→Z, scaled by 32.
 fn to_quake(bx: i32, bz: i32, by: i32) -> (i32, i32, i32) {
     (bx * 32, bz * 32, by * 32)
 }
 
-fn is_full_match(
+fn is_shape_match(
     bx: i32, by: i32, bz: i32,
     texture: &str,
+    shape: BlockShape,
     visited: &[bool],
     blocks: &[Option<Block>],
     w: i32, l: i32,
@@ -22,15 +45,94 @@ fn is_full_match(
     let i = (by * (w * l) + bz * w + bx) as usize;
     if visited[i] { return false; }
     if let Some(b) = &blocks[i] {
-        if b.name != texture { return false; }
-        matches!(block_shapes::get_shape(b), BlockShape::Full)
+        b.name == texture && block_shapes::get_shape(b) == shape
     } else {
         false
     }
 }
 
-pub fn optimize_mesh(map: &VoxelMap) -> Vec<Brush> {
-    println!("Optimizing geometry...");
+// Greedy-expand from (x, y, z) along the given axes. Returns exclusive block-coord extents.
+fn greedy_expand(
+    x: i32, y: i32, z: i32,
+    texture: &str,
+    shape: BlockShape,
+    axes: &[Axis],
+    map: &VoxelMap,
+    visited: &[bool],
+) -> (i32, i32, i32) {
+    let w = map.width;
+    let h = map.height;
+    let l = map.length;
+
+    let mut ex = x + 1;
+    let mut ey = y + 1;
+    let mut ez = z + 1;
+
+    for &axis in axes {
+        match axis {
+            Axis::X => {
+                'x: loop {
+                    if ex >= w { break; }
+                    for cy in y..ey {
+                        for cz in z..ez {
+                            if !is_shape_match(ex, cy, cz, texture, shape, visited, &map.blocks, w, l) {
+                                break 'x;
+                            }
+                        }
+                    }
+                    ex += 1;
+                }
+            }
+            Axis::Y => {
+                'y: loop {
+                    if ey >= h { break; }
+                    for cx in x..ex {
+                        for cz in z..ez {
+                            if !is_shape_match(cx, ey, cz, texture, shape, visited, &map.blocks, w, l) {
+                                break 'y;
+                            }
+                        }
+                    }
+                    ey += 1;
+                }
+            }
+            Axis::Z => {
+                'z: loop {
+                    if ez >= l { break; }
+                    for cx in x..ex {
+                        for cy in y..ey {
+                            if !is_shape_match(cx, cy, ez, texture, shape, visited, &map.blocks, w, l) {
+                                break 'z;
+                            }
+                        }
+                    }
+                    ez += 1;
+                }
+            }
+        }
+    }
+
+    (ex, ey, ez)
+}
+
+fn single_block_brush(x: i32, y: i32, z: i32, shape: BlockShape, texture: String) -> Vec<Brush> {
+    let (qx1, qy1, qz1) = to_quake(x, z, y);
+    let (qx2, qy2, qz2) = to_quake(x + 1, z + 1, y + 1);
+    match shape {
+        BlockShape::SlabBottom => vec![Brush { min: (qx1, qy1, qz1),      max: (qx2, qy2, qz1 + 16), texture }],
+        BlockShape::SlabTop    => vec![Brush { min: (qx1, qy1, qz1 + 16), max: (qx2, qy2, qz2),      texture }],
+        BlockShape::ThinPanelNS => vec![Brush { min: (qx1 + 14, qy1, qz1), max: (qx1 + 18, qy2, qz2), texture }],
+        BlockShape::ThinPanelEW => vec![Brush { min: (qx1, qy1 + 14, qz1), max: (qx2, qy1 + 18, qz2), texture }],
+        BlockShape::ThinCross => vec![
+            Brush { min: (qx1 + 14, qy1, qz1), max: (qx1 + 18, qy2, qz2), texture: texture.clone() },
+            Brush { min: (qx1, qy1 + 14, qz1), max: (qx2, qy1 + 18, qz2), texture },
+        ],
+        BlockShape::Full => vec![Brush { min: (qx1, qy1, qz1), max: (qx2, qy2, qz2), texture }],
+    }
+}
+
+pub fn optimize_mesh(map: &VoxelMap, level: GreedyLevel) -> Vec<Brush> {
+    println!("Optimizing geometry... (greedy: {:?})", level);
     let mut brushes = Vec::new();
     let mut visited = vec![false; map.blocks.len()];
 
@@ -54,104 +156,42 @@ pub fn optimize_mesh(map: &VoxelMap) -> Vec<Brush> {
                 let texture = block.name.clone();
                 let shape = block_shapes::get_shape(&block);
 
-                match shape {
-                    BlockShape::Full => {
-                        // 1. Expand in X
-                        let mut ex = x + 1;
-                        while ex < w && is_full_match(ex, y, z, &texture, &visited, &map.blocks, w, l) {
-                            ex += 1;
-                        }
+                let axes: Option<&[Axis]> = match (level, shape) {
+                    (GreedyLevel::None, _) => None,
+                    (GreedyLevel::FullOnly, BlockShape::Full) => Some(AXES_XZY),
+                    (GreedyLevel::FullOnly, _) => None,
+                    (GreedyLevel::All, BlockShape::Full) => Some(AXES_XZY),
+                    (GreedyLevel::All, BlockShape::SlabBottom | BlockShape::SlabTop) => Some(AXES_XZ),
+                    (GreedyLevel::All, BlockShape::ThinPanelNS) => Some(AXES_ZY),
+                    (GreedyLevel::All, BlockShape::ThinPanelEW) => Some(AXES_XY),
+                    (GreedyLevel::All, BlockShape::ThinCross) => None,
+                };
 
-                        // 2. Expand in Z
-                        let mut ez = z + 1;
-                        'z_exp: while ez < l {
-                            for tx in x..ex {
-                                if !is_full_match(tx, y, ez, &texture, &visited, &map.blocks, w, l) {
-                                    break 'z_exp;
-                                }
-                            }
-                            ez += 1;
-                        }
+                if let Some(axes) = axes {
+                    let (ex, ey, ez) = greedy_expand(x, y, z, &texture, shape, axes, map, &visited);
 
-                        // 3. Expand in Y
-                        let mut ey = y + 1;
-                        'y_exp: while ey < h {
-                            for tz in z..ez {
-                                for tx in x..ex {
-                                    if !is_full_match(tx, ey, tz, &texture, &visited, &map.blocks, w, l) {
-                                        break 'y_exp;
-                                    }
-                                }
-                            }
-                            ey += 1;
-                        }
-
-                        for vy in y..ey {
-                            for vz in z..ez {
-                                for vx in x..ex {
-                                    visited[get_idx(vx, vy, vz)] = true;
-                                }
+                    for vy in y..ey {
+                        for vz in z..ez {
+                            for vx in x..ex {
+                                visited[get_idx(vx, vy, vz)] = true;
                             }
                         }
-
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (qx2, qy2, qz2) = to_quake(ex, ez, ey);
-                        brushes.push(Brush { min: (qx1, qy1, qz1), max: (qx2, qy2, qz2), texture });
                     }
 
-                    BlockShape::SlabBottom => {
-                        visited[idx] = true;
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (qx2, qy2, _) = to_quake(x + 1, z + 1, y + 1);
-                        brushes.push(Brush { min: (qx1, qy1, qz1), max: (qx2, qy2, qz1 + 16), texture });
-                    }
+                    let (qx1, qy1, qz1) = to_quake(x, z, y);
+                    let (qx2, qy2, qz2) = to_quake(ex, ez, ey);
 
-                    BlockShape::SlabTop => {
-                        visited[idx] = true;
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (qx2, qy2, qz2) = to_quake(x + 1, z + 1, y + 1);
-                        brushes.push(Brush { min: (qx1, qy1, qz1 + 16), max: (qx2, qy2, qz2), texture });
-                    }
-
-                    BlockShape::ThinPanelNS => {
-                        visited[idx] = true;
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (_, qy2, qz2) = to_quake(x + 1, z + 1, y + 1);
-                        // Panel runs N-S (Quake Y), thin in Quake X
-                        brushes.push(Brush {
-                            min: (qx1 + 14, qy1, qz1),
-                            max: (qx1 + 18, qy2, qz2),
-                            texture,
-                        });
-                    }
-
-                    BlockShape::ThinPanelEW => {
-                        visited[idx] = true;
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (qx2, _, qz2) = to_quake(x + 1, z + 1, y + 1);
-                        // Panel runs E-W (Quake X), thin in Quake Y
-                        brushes.push(Brush {
-                            min: (qx1, qy1 + 14, qz1),
-                            max: (qx2, qy1 + 18, qz2),
-                            texture,
-                        });
-                    }
-
-                    BlockShape::ThinCross => {
-                        visited[idx] = true;
-                        let (qx1, qy1, qz1) = to_quake(x, z, y);
-                        let (qx2, qy2, qz2) = to_quake(x + 1, z + 1, y + 1);
-                        brushes.push(Brush {
-                            min: (qx1 + 14, qy1, qz1),
-                            max: (qx1 + 18, qy2, qz2),
-                            texture: texture.clone(),
-                        });
-                        brushes.push(Brush {
-                            min: (qx1, qy1 + 14, qz1),
-                            max: (qx2, qy1 + 18, qz2),
-                            texture,
-                        });
-                    }
+                    let brush = match shape {
+                        BlockShape::SlabBottom  => Brush { min: (qx1, qy1, qz1),      max: (qx2, qy2, qz1 + 16), texture },
+                        BlockShape::SlabTop     => Brush { min: (qx1, qy1, qz1 + 16), max: (qx2, qy2, qz2),      texture },
+                        BlockShape::ThinPanelNS => Brush { min: (qx1 + 14, qy1, qz1), max: (qx1 + 18, qy2, qz2), texture },
+                        BlockShape::ThinPanelEW => Brush { min: (qx1, qy1 + 14, qz1), max: (qx2, qy1 + 18, qz2), texture },
+                        _ =>                       Brush { min: (qx1, qy1, qz1),       max: (qx2, qy2, qz2),      texture },
+                    };
+                    brushes.push(brush);
+                } else {
+                    visited[idx] = true;
+                    brushes.extend(single_block_brush(x, y, z, shape, texture));
                 }
             }
         }

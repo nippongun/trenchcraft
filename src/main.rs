@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+use optimizer::GreedyLevel;
+
 mod nbt_unpack;
 mod parser;
 mod filter;
@@ -16,6 +18,10 @@ struct Args {
 
     /// Path to the output Trenchbroom .map file
     output: PathBuf,
+
+    /// Greedy meshing level: none, full-only, or all (default)
+    #[arg(long, value_enum, default_value_t = GreedyLevel::All)]
+    greedy: GreedyLevel,
 }
 
 fn main() {
@@ -50,7 +56,7 @@ fn main() {
 
     if let Some(map) = voxel_map {
         let filtered = filter::filter_blocks(map);
-        let brushes = optimizer::optimize_mesh(&filtered);
+        let brushes = optimizer::optimize_mesh(&filtered, args.greedy);
         exporter::export_map(&brushes, &args.output);
     } else {
         eprintln!("Failed to parse the schematic into a 3D block array.");

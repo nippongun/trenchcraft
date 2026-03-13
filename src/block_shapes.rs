@@ -1,5 +1,6 @@
 use crate::parser::Block;
 
+#[derive(Copy, Clone, PartialEq)]
 pub enum BlockShape {
     Full,
     SlabBottom,
