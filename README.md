@@ -4,25 +4,40 @@ Trenchcraft is a robust, blazingly-fast command-line tool written in Rust for co
 
 ## Features
 
-- **Multi-Format Support**: Parses standard Minecraft `.schematic` and `.schem` files alongside modern Fabric `.litematic` schemas.
+- **Multi-Format Support**: Parses standard Minecraft `.schematic` and `.schem` files alongside modern Fabric `.litematic` files.
 - **Smart Material Filtering**: Automatically culls empty `minecraft:air` blocks to prevent invisible garbage geometry from crashing the BSP compiler.
-- **Greedy Meshing Optimizer**: Runs a sophisticated 3-dimensional face traversal algorithm. Trenchcraft consolidates thousands of single `1x1x1` blocks into large optimized geometric brushes, delivering **massive performance bumps** and keeping the Trenchbroom editor completely lag-free.
+- **Shape-Aware Greedy Meshing**: Consolidates thousands of individual blocks into large optimized brushes. Full blocks use 3-axis greedy expansion; slabs, glass panes, iron bars, and fences are each expanded along their geometrically valid axes. Configurable via `--greedy <none|full-only|all>`.
 - **Valve 220 Map Configuration**: Outputs geometry using the modern Valve 220 Map format specification. This guarantees pixel-perfect UV mapping scaling in Trenchbroom.
 
 ## Usage
 
-Trenchcraft takes two positional arguments: the input schematic file and the output map destination.
-
-```bash
-cargo run -- <input_schematic> <output_map>
+```
+trenchcraft <input> <output> [--greedy <none|full-only|all>]
 ```
 
-### Example
+| Argument | Description |
+|----------|-------------|
+| `input`  | Path to a `.schem`, `.schematic`, or `.litematic` file |
+| `output` | Path to write the `.map` file |
+| `--greedy` | Meshing level — `none`, `full-only`, or `all` (default) |
+
+### Examples
+
 ```bash
-cargo run -- The_White_House-from-abfielder.schem target/debug/The_White_House.map
+# Basic conversion
+cargo run --release -- build.schem out.map
+
+# Maximum merging (default)
+cargo run --release -- build.schem out.map --greedy all
+
+# Full blocks only — skips slab/pane merging
+cargo run --release -- build.schem out.map --greedy full-only
+
+# No merging — one brush per block, useful for debugging
+cargo run --release -- build.schem out.map --greedy none
 ```
 
-\* *Note: Trenchcraft automatically assigns `textures/minecraft/<blockname>` paths to the output geometry. To see block textures in TrenchBroom, add a Texture WAD pack or game directory folder to TrenchBroom containing the matching Minecraft assets!*
+> **Textures**: Trenchcraft assigns `textures/minecraft/<blockname>` paths to all geometry. To see block textures in TrenchBroom, point it at a folder containing the matching Minecraft assets.
 
 ## Dependencies
 
